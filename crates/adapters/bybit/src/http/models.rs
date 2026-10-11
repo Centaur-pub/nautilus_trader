@@ -34,8 +34,9 @@ use crate::common::{
         SpotPriceFilter,
     },
     parse::{
-        bool_or_int, deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
-        deserialize_string_to_u8, masked_secret, on_off_bool,
+        bool_or_int, deserialize_decimal_or_zero, deserialize_i32_or_string,
+        deserialize_optional_decimal_or_zero, deserialize_string_to_u8,
+        deserialize_trigger_direction_or_string, masked_secret, on_off_bool,
     },
 };
 
@@ -885,6 +886,7 @@ pub struct BybitOrder {
     pub qty: String,
     pub side: BybitOrderSide,
     pub is_leverage: String,
+    #[serde(deserialize_with = "deserialize_i32_or_string")]
     pub position_idx: i32,
     pub order_status: BybitOrderStatus,
     pub cancel_type: BybitCancelType,
@@ -904,12 +906,14 @@ pub struct BybitOrder {
     pub stop_loss: String,
     pub tp_trigger_by: BybitTriggerType,
     pub sl_trigger_by: BybitTriggerType,
+    #[serde(deserialize_with = "deserialize_trigger_direction_or_string")]
     pub trigger_direction: BybitTriggerDirection,
     pub trigger_by: BybitTriggerType,
     pub last_price_on_created: String,
     pub reduce_only: bool,
     pub close_on_trigger: bool,
     pub smp_type: BybitSmpType,
+    #[serde(deserialize_with = "deserialize_i32_or_string")]
     pub smp_group: i32,
     pub smp_order_id: Ustr,
     pub tpsl_mode: Option<BybitTpSlMode>,
@@ -1980,6 +1984,20 @@ mod tests {
         assert_eq!(order.tpsl_mode, Some(BybitTpSlMode::Full));
         assert_eq!(order.order_type, BybitOrderType::Limit);
         assert_eq!(order.smp_type, BybitSmpType::None);
+    }
+
+    #[rstest]
+    fn deserialize_order_response_accepts_string_integer_fields() {
+        let json = load_test_json("http_get_orders_history.json")
+            .replace("\"positionIdx\": 0", "\"positionIdx\": \"0\"")
+            .replace("\"smpGroup\": 0", "\"smpGroup\": \"0\"")
+            .replace("\"triggerDirection\": 0", "\"triggerDirection\": \"0\"");
+        let response: BybitOrderHistoryResponse = serde_json::from_str(&json).unwrap();
+        let order = &response.result.list[0];
+
+        assert_eq!(order.position_idx, 0);
+        assert_eq!(order.smp_group, 0);
+        assert_eq!(order.trigger_direction, BybitTriggerDirection::None);
     }
 
     #[rstest]

@@ -8,7 +8,7 @@ echo "Working directory: $(pwd)"
 echo
 
 echo "=== Setting PyO3 environment ==="
-export PYO3_PYTHON=/workspace/.venv/bin/python3
+export PYO3_PYTHON="$(uv python find 3.13)"
 echo "PYO3_PYTHON: $PYO3_PYTHON"
 echo
 

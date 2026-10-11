@@ -22,6 +22,48 @@ pub use nautilus_core::serialization::{
     deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
     deserialize_optional_decimal_str, deserialize_string_to_u8,
 };
+use serde::Deserialize;
+
+/// Deserializes an `i32` from either a JSON integer or a numeric string.
+///
+/// Bybit occasionally changes schema-declared integer fields to strings without
+/// notice. Accepting both wire representations prevents an otherwise valid order
+/// update from being discarded at the WebSocket frame boundary.
+pub fn deserialize_i32_or_string<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum I32OrString {
+        Integer(i32),
+        String(String),
+    }
+
+    match I32OrString::deserialize(deserializer)? {
+        I32OrString::Integer(value) => Ok(value),
+        I32OrString::String(value) => value.parse::<i32>().map_err(serde::de::Error::custom),
+    }
+}
+
+/// Deserializes a Bybit trigger direction from an integer or numeric string.
+pub fn deserialize_trigger_direction_or_string<'de, D>(
+    deserializer: D,
+) -> Result<crate::common::enums::BybitTriggerDirection, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use crate::common::enums::BybitTriggerDirection;
+
+    match deserialize_i32_or_string(deserializer)? {
+        0 => Ok(BybitTriggerDirection::None),
+        1 => Ok(BybitTriggerDirection::RisesTo),
+        2 => Ok(BybitTriggerDirection::FallsTo),
+        value => Err(serde::de::Error::custom(format!(
+            "invalid Bybit trigger direction {value}, expected 0, 1, or 2"
+        ))),
+    }
+}
 
 /// Serde helper for Bybit `ON`/`OFF` string fields that represent booleans.
 ///

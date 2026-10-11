@@ -29,8 +29,9 @@ use crate::{
             BybitWsOrderRequestOp,
         },
         parse::{
-            deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
-            deserialize_optional_decimal_str,
+            deserialize_decimal_or_zero, deserialize_i32_or_string,
+            deserialize_optional_decimal_or_zero, deserialize_optional_decimal_str,
+            deserialize_trigger_direction_or_string,
         },
     },
     websocket::enums::BybitWsOperation,
@@ -777,6 +778,7 @@ pub struct BybitWsAccountOrder {
     pub cum_exec_value: String,
     pub avg_price: String,
     pub block_trade_id: Ustr,
+    #[serde(deserialize_with = "deserialize_i32_or_string")]
     pub position_idx: i32,
     pub cum_exec_fee: String,
     pub created_time: String,
@@ -792,11 +794,13 @@ pub struct BybitWsAccountOrder {
     pub close_on_trigger: bool,
     pub place_type: Ustr,
     pub smp_type: BybitSmpType,
+    #[serde(deserialize_with = "deserialize_i32_or_string")]
     pub smp_group: i32,
     pub smp_order_id: Ustr,
     pub fee_currency: Ustr,
     pub trigger_by: BybitTriggerType,
     pub stop_order_type: BybitStopOrderType,
+    #[serde(deserialize_with = "deserialize_trigger_direction_or_string")]
     pub trigger_direction: BybitTriggerDirection,
     #[serde(default)]
     pub tpsl_mode: Option<BybitTpSlMode>,
@@ -1328,6 +1332,20 @@ mod tests {
         assert_eq!(order.tpsl_mode, Some(BybitTpSlMode::Full));
         assert_eq!(order.create_type, Some(BybitCreateType::CreateByUser));
         assert_eq!(order.side, BybitOrderSide::Buy);
+    }
+
+    #[rstest]
+    fn deserialize_account_order_frame_accepts_string_integer_fields() {
+        let json = load_test_json("ws_account_order.json")
+            .replace("\"positionIdx\": 0", "\"positionIdx\": \"0\"")
+            .replace("\"smpGroup\": 0", "\"smpGroup\": \"0\"")
+            .replace("\"triggerDirection\": 0", "\"triggerDirection\": \"0\"");
+        let frame: BybitWsAccountOrderMsg = serde_json::from_str(&json).unwrap();
+        let order = &frame.data[0];
+
+        assert_eq!(order.position_idx, 0);
+        assert_eq!(order.smp_group, 0);
+        assert_eq!(order.trigger_direction, BybitTriggerDirection::None);
     }
 
     #[rstest]
