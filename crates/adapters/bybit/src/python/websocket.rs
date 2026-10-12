@@ -15,7 +15,7 @@
 
 //! Python bindings for the Bybit WebSocket client.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use ahash::AHashMap;
 use dashmap::DashMap;
@@ -54,6 +54,7 @@ use crate::{
     websocket::{
         client::{BATCH_PROCESSING_LIMIT, BybitWebSocketClient, PendingPyRequest},
         dispatch::PendingOperation,
+        fill_send::FillSendTimes,
         messages::{BybitWebSocketError, BybitWsMessage},
         parse::{
             parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
@@ -273,6 +274,30 @@ impl BybitWebSocketClient {
         self.remove_option_greeks_sub(&instrument_id);
     }
 
+    /// Enables the bounded execution timestamp sidecar; disabled by default.
+    #[pyo3(name = "set_fill_send_telemetry")]
+    fn py_set_fill_send_telemetry(&self, enabled: bool) {
+        self.fill_send_times.set_enabled(enabled);
+    }
+
+    /// Non-consuming lookup by full exchange fill identity; unknown returns zero.
+    #[pyo3(name = "fill_source_send_ns")]
+    fn py_fill_source_send_ns(
+        &self,
+        instrument_id: &str,
+        venue_order_id: &str,
+        trade_id: &str,
+    ) -> u64 {
+        self.fill_send_times
+            .get(instrument_id, venue_order_id, trade_id)
+    }
+
+    /// Returns entries, capacity evictions, TTL expirations and lock failures.
+    #[pyo3(name = "fill_send_stats")]
+    fn py_fill_send_stats(&self) -> HashMap<String, u64> {
+        self.fill_send_times.stats()
+    }
+
     /// Establishes the WebSocket connection.
     ///
     /// # Errors
@@ -303,6 +328,7 @@ impl BybitWebSocketClient {
             let bars_timestamp_on_close = client.bars_timestamp_on_close();
             let instruments = Arc::clone(client.instruments_cache_ref());
             let pending_py_requests = Arc::clone(client.pending_py_requests());
+            let fill_send_times = Arc::clone(&client.fill_send_times);
 
             get_runtime().spawn(async move {
                 let mut quote_cache = AHashMap::new();
@@ -388,6 +414,7 @@ impl BybitWebSocketClient {
                                 &instruments,
                                 account_id,
                                 clock,
+                                &fill_send_times,
                                 &call_soon,
                                 &callback,
                             );
@@ -398,6 +425,7 @@ impl BybitWebSocketClient {
                                 &instruments,
                                 account_id,
                                 clock,
+                                &fill_send_times,
                                 &call_soon,
                                 &callback,
                             );
@@ -1721,6 +1749,7 @@ fn handle_account_execution(
     instruments: &AtomicMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
     clock: &AtomicTime,
+    fill_send_times: &FillSendTimes,
     call_soon: &Py<PyAny>,
     callback: &Py<PyAny>,
 ) {
@@ -1738,7 +1767,10 @@ fn handle_account_execution(
         };
 
         match parse_ws_fill_report(exec, account_id, instrument, ts_init) {
-            Ok(report) => send_to_python(report, call_soon, callback),
+            Ok(report) => {
+                fill_send_times.remember(&report, msg.creation_time);
+                send_to_python(report, call_soon, callback);
+            }
             Err(e) => log::error!("Failed to parse fill report: {e}"),
         }
     }
@@ -1749,6 +1781,7 @@ fn handle_account_execution_fast(
     instruments: &AtomicMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
     clock: &AtomicTime,
+    fill_send_times: &FillSendTimes,
     call_soon: &Py<PyAny>,
     callback: &Py<PyAny>,
 ) {
@@ -1766,7 +1799,10 @@ fn handle_account_execution_fast(
         };
 
         match parse_ws_fill_report_fast(exec, account_id, instrument, None, ts_init) {
-            Ok(report) => send_to_python(report, call_soon, callback),
+            Ok(report) => {
+                fill_send_times.remember(&report, msg.creation_time);
+                send_to_python(report, call_soon, callback);
+            }
             Err(e) => log::error!("Failed to parse fast fill report: {e}"),
         }
     }
@@ -1968,5 +2004,194 @@ fn emit_rejection(
             );
             send_to_python(event, call_soon, callback);
         }
+    }
+}
+
+#[cfg(test)]
+mod fill_send_tests {
+    use std::ffi::CString;
+
+    use nautilus_model::reports::FillReport;
+    use pyo3::types::{PyList, PyModule};
+    use rstest::rstest;
+
+    use super::*;
+    use crate::{
+        common::{parse::parse_linear_instrument, testing::load_test_json},
+        http::models::{BybitFeeRate, BybitInstrumentLinearResponse},
+        websocket::{messages::BybitWsFrame, parse::parse_bybit_ws_frame},
+    };
+
+    fn instrument() -> InstrumentAny {
+        let response: BybitInstrumentLinearResponse =
+            serde_json::from_str(&load_test_json("http_get_instruments_linear.json")).unwrap();
+        let fee_rate = BybitFeeRate {
+            symbol: "BTCUSDT".into(),
+            taker_fee_rate: "0.00055".into(),
+            maker_fee_rate: "0.0001".into(),
+            base_coin: Some("BTC".into()),
+        };
+        let ts = UnixNanos::new(1_700_000_000_000_000_000);
+        parse_linear_instrument(&response.result.list[0], &fee_rate, ts, ts).unwrap()
+    }
+
+    #[rstest]
+    #[case(false, 2)]
+    #[case(false, 0)]
+    #[case(false, -1)]
+    #[case(false, i64::MAX)]
+    #[case(false, (u64::MAX / 1_000_000 + 1) as i64)]
+    #[case(true, 2)]
+    #[case(true, 0)]
+    #[case(true, -1)]
+    #[case(true, i64::MAX)]
+    fn execution_python_callback_parity(#[case] fast: bool, #[case] creation_time: i64) {
+        Python::initialize();
+        Python::attach(|py| {
+            let code = CString::new("reports = []\ndef call_soon(callback, report):\n    reports.append(report)\ndef callback(report):\n    pass\n").unwrap();
+            let name = CString::new(format!("capture_{fast}_{creation_time}")).unwrap();
+            let module = PyModule::from_code(py, &code, c"capture.py", &name).unwrap();
+            let call_soon = module.getattr("call_soon").unwrap().unbind();
+            let callback = module.getattr("callback").unwrap().unbind();
+            let reports = module
+                .getattr("reports")
+                .unwrap()
+                .cast_into::<PyList>()
+                .unwrap();
+            let instruments = AtomicMap::new();
+            instruments.insert("BTCUSDT-LINEAR".into(), instrument());
+            let clock = AtomicTime::new(false, UnixNanos::new(1_700_000_000_000_000_000));
+            let account = Some(AccountId::new("BYBIT-001"));
+            let filename = if fast {
+                "ws_account_execution_fast.json"
+            } else {
+                "ws_account_execution.json"
+            };
+            let mut value: serde_json::Value =
+                serde_json::from_str(&load_test_json(filename)).unwrap();
+            value["creationTime"] = creation_time.into();
+            value["data"][0]["symbol"] = "BTCUSDT".into();
+            let mut second = value["data"][0].clone();
+            second["execId"] = "second-exec-uuid".into();
+            value["data"].as_array_mut().unwrap().push(second);
+            let mut bad_fill = value["data"][0].clone();
+            bad_fill["execQty"] = "bad-quantity".into();
+            bad_fill["execId"] = "bad-exec-uuid".into();
+            value["data"].as_array_mut().unwrap().push(bad_fill);
+            // Original decoder's rejects remain rejects, including missing creationTime.
+            for invalid in [
+                serde_json::Value::Null,
+                "2".into(),
+                true.into(),
+                1.5.into(),
+                u64::MAX.into(),
+            ] {
+                let mut invalid_frame = value.clone();
+                invalid_frame["creationTime"] = invalid;
+                assert!(matches!(
+                    parse_bybit_ws_frame(invalid_frame),
+                    BybitWsFrame::Unknown(_)
+                ));
+            }
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove("creationTime");
+            assert!(matches!(
+                parse_bybit_ws_frame(missing),
+                BybitWsFrame::Unknown(_)
+            ));
+            let times = FillSendTimes::default();
+            let mut output = Vec::new();
+            for enabled in [false, true] {
+                times.set_enabled(enabled);
+                for send in [creation_time, 9] {
+                    // Duplicate reports must still be delivered.
+                    let mut frame = value.clone();
+                    frame["creationTime"] = send.into();
+                    match parse_bybit_ws_frame(frame) {
+                        BybitWsFrame::AccountExecution(msg) => handle_account_execution(
+                            &msg,
+                            &instruments,
+                            account,
+                            &clock,
+                            &times,
+                            &call_soon,
+                            &callback,
+                        ),
+                        BybitWsFrame::AccountExecutionFast(msg) => handle_account_execution_fast(
+                            &msg,
+                            &instruments,
+                            account,
+                            &clock,
+                            &times,
+                            &call_soon,
+                            &callback,
+                        ),
+                        frame => panic!("Unexpected execution frame: {frame:?}"),
+                    }
+                }
+                assert_eq!(reports.len(), 4);
+                let mut delivered: Vec<FillReport> =
+                    reports.iter().map(|r| r.extract().unwrap()).collect();
+                for report in &mut delivered {
+                    let expected_send = if enabled {
+                        u64::try_from(creation_time)
+                            .ok()
+                            .and_then(|v| v.checked_mul(1_000_000))
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        times.get(
+                            &report.instrument_id.to_string(),
+                            report.venue_order_id.as_str(),
+                            report.trade_id.as_str()
+                        ),
+                        expected_send
+                    );
+                    // Each parse already generates a new UUID; compare every other field.
+                    report.report_id = UUID4::from("00000000-0000-4000-8000-000000000001");
+                }
+                assert_eq!(times.stats()["entries"], if enabled { 2 } else { 0 });
+                output.push(delivered);
+                reports.call_method0("clear").unwrap();
+            }
+            assert_eq!(output[0], output[1]); // Content, count and order.
+        });
+    }
+
+    #[rstest]
+    fn client_clones_share_sidecar_and_python_capability() {
+        let client = BybitWebSocketClient::new_public(None, 20);
+        let clone = client.clone();
+        let other = BybitWebSocketClient::new_public(None, 20);
+        assert!(Arc::ptr_eq(&client.fill_send_times, &clone.fill_send_times));
+        assert!(!Arc::ptr_eq(
+            &client.fill_send_times,
+            &other.fill_send_times
+        ));
+        Python::initialize();
+        Python::attach(|py| {
+            let object = Py::new(py, client).unwrap();
+            object
+                .call_method1(py, "set_fill_send_telemetry", (true,))
+                .unwrap();
+            let send: u64 = object
+                .call_method1(py, "fill_source_send_ns", ("i", "o", "t"))
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            assert_eq!(send, 0);
+            let stats: HashMap<String, u64> = object
+                .call_method0(py, "fill_send_stats")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            assert_eq!(stats["entries"], 0);
+            assert_eq!(stats["failures"], 0);
+            object
+                .call_method1(py, "set_fill_send_telemetry", (false,))
+                .unwrap();
+        });
     }
 }

@@ -124,6 +124,8 @@ pub struct BybitWebSocketClient {
     option_greeks_subs: Arc<AtomicSet<InstrumentId>>,
     bars_timestamp_on_close: Arc<AtomicBool>,
     pending_py_requests: Arc<DashMap<String, Vec<PendingPyRequest>>>,
+    #[cfg(feature = "python")]
+    pub(crate) fill_send_times: Arc<crate::websocket::fill_send::FillSendTimes>,
     transport_backend: TransportBackend,
     cancellation_token: CancellationToken,
     proxy_url: Option<String>,
@@ -167,6 +169,8 @@ impl Clone for BybitWebSocketClient {
             option_greeks_subs: Arc::clone(&self.option_greeks_subs),
             bars_timestamp_on_close: Arc::clone(&self.bars_timestamp_on_close),
             pending_py_requests: Arc::clone(&self.pending_py_requests),
+            #[cfg(feature = "python")]
+            fill_send_times: Arc::clone(&self.fill_send_times),
             transport_backend: self.transport_backend,
             cancellation_token: self.cancellation_token.clone(),
             proxy_url: self.proxy_url.clone(),
@@ -230,6 +234,8 @@ impl BybitWebSocketClient {
             option_greeks_subs: Arc::new(AtomicSet::new()),
             bars_timestamp_on_close: Arc::new(AtomicBool::new(true)),
             pending_py_requests: Arc::new(DashMap::new()),
+            #[cfg(feature = "python")]
+            fill_send_times: Arc::new(crate::websocket::fill_send::FillSendTimes::default()),
             account_id: None,
             mm_level: Arc::new(AtomicU8::new(0)),
             transport_backend,
@@ -283,6 +289,8 @@ impl BybitWebSocketClient {
             option_greeks_subs: Arc::new(AtomicSet::new()),
             bars_timestamp_on_close: Arc::new(AtomicBool::new(true)),
             pending_py_requests: Arc::new(DashMap::new()),
+            #[cfg(feature = "python")]
+            fill_send_times: Arc::new(crate::websocket::fill_send::FillSendTimes::default()),
             account_id: None,
             mm_level: Arc::new(AtomicU8::new(0)),
             transport_backend,
@@ -336,6 +344,8 @@ impl BybitWebSocketClient {
             option_greeks_subs: Arc::new(AtomicSet::new()),
             bars_timestamp_on_close: Arc::new(AtomicBool::new(true)),
             pending_py_requests: Arc::new(DashMap::new()),
+            #[cfg(feature = "python")]
+            fill_send_times: Arc::new(crate::websocket::fill_send::FillSendTimes::default()),
             account_id: None,
             mm_level: Arc::new(AtomicU8::new(0)),
             transport_backend,

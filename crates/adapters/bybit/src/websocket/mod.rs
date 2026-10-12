@@ -23,4 +23,7 @@ pub mod handler;
 pub mod messages;
 pub mod parse;
 
+#[cfg(any(feature = "python", test))]
+pub(crate) mod fill_send;
+
 pub use parse::parse_bybit_ws_frame;
