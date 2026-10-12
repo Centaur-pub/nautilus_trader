@@ -18,6 +18,43 @@ Bybit occasionally sends `positionIdx`, `smpGroup` and `triggerDirection` as
 strings. The WebSocket and HTTP order models accept both integer and string
 encodings. The Docker builder pins its uv image and Python install path.
 
+### Python Bybit fill send telemetry (issue #17)
+
+The Python execution binding captures the execution / execution.fast envelope's
+root `creationTime` after the existing fill parser succeeds, before scheduling the
+existing callback. Reports, decoder acceptance, callback count/order and trading
+deduplication are unchanged. `execTime` is never used as a fallback.
+
+Each WebSocket client owns an optional sidecar shared with its clones, keyed by
+`(instrument_id, venue_order_id, trade_id)` using the parsed report's full identity.
+It is disabled by default. First writer wins, including zero; reads do not consume
+or renew entries. Capacity is 16,384, monotonic TTL is 60 seconds, oldest entries
+are evicted. Negative/zero/UInt64 ns multiplication overflow maps to zero; missing
+`creationTime` still fails the original decoder. Lock contention waits for the
+short, I/O-free table operation; poison increments `failures`, returns zero on
+lookup and skips recording without interrupting fill delivery. The disabled path
+performs only the enable check: no clock read, key allocation or table lock.
+
+Python capability on `BybitWebSocketClient` (also declared in the core stub):
+
+```python
+def set_fill_send_telemetry(self, enabled: bool) -> None: ...
+def fill_source_send_ns(self, instrument_id: str, venue_order_id: str, trade_id: str) -> int: ...
+def fill_send_stats(self) -> dict[str, int]: ...
+```
+
+Stats contain `entries`, `overflow`, `expiry`, `failures`; expiry is counted on
+record/lookup/stats cleanup. Disabling clears entries/eviction/expiry counters;
+lock failures remain cumulative. Enabling again is idempotent. Separate clients
+never share timestamps. REST-only fills return zero; with the accepted identity
+lookup semantics a REST fill followed by WS can acquire the WS send at trace lookup.
+
+Deploy this increment together with centaur's Python lookup and a newly built
+Nautilus wheel. Rebuild/verify/reissue matching MDD artifacts for the new binary
+SHA; MDD source and CTN6 schema do not change. The production hashes above describe
+the original wheel, not this unbuilt increment. Maintainers own packaging,
+manifest updates and real-wheel integration validation.
+
 ## Build
 
 `build_patched_nautilus_bybit.sh` is the centaur build script (copied here for
