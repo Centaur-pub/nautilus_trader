@@ -7,7 +7,11 @@ readonly BUILDER_IMAGE="centaur-nautilus-1.231.0-builder"
 readonly RUST_IMAGE="rust:1.97.1-bookworm"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-patch_file="${repo_root}/patches/nautilus_trader-1.231.0-bybit-string-integers.patch"
+# Applied in order on top of NAUTILUS_COMMIT.
+patch_files=(
+    "${repo_root}/patches/nautilus_trader-1.231.0-bybit-string-integers.patch"
+    "${repo_root}/patches/nautilus_trader-1.231.0-bybit-fill-send.patch"
+)
 mode="${1:-test}"
 output_dir="${2:-${repo_root}/dist}"
 source_dir="$(mktemp -d -t centaur-nautilus-bybit.XXXXXXXX)"
@@ -30,8 +34,10 @@ if [[ "${actual_commit}" != "${NAUTILUS_COMMIT}" ]]; then
     exit 1
 fi
 
-git -C "${source_dir}" apply --check "${patch_file}"
-git -C "${source_dir}" apply "${patch_file}"
+for patch_file in "${patch_files[@]}"; do
+    git -C "${source_dir}" apply --check "${patch_file}"
+    git -C "${source_dir}" apply "${patch_file}"
+done
 
 case "${mode}" in
     test)
@@ -41,7 +47,7 @@ case "${mode}" in
             -v "${source_dir}:/src:ro" \
             -w /src \
             "${RUST_IMAGE}" \
-            cargo test -p nautilus-bybit --lib string_integer_fields
+            sh -c "cargo test -p nautilus-bybit --lib string_integer_fields && cargo test -p nautilus-bybit --lib fill_send"
         ;;
     wheel)
         mkdir -p "${output_dir}"
