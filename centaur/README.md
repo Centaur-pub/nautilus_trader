@@ -49,11 +49,21 @@ lock failures remain cumulative. Enabling again is idempotent. Separate clients
 never share timestamps. REST-only fills return zero; with the accepted identity
 lookup semantics a REST fill followed by WS can acquire the WS send at trace lookup.
 
-Deploy this increment together with centaur's Python lookup and a newly built
-Nautilus wheel. Rebuild/verify/reissue matching MDD artifacts for the new binary
-SHA; MDD source and CTN6 schema do not change. The production hashes above describe
-the original wheel, not this unbuilt increment. Maintainers own packaging,
-manifest updates and real-wheel integration validation.
+Deploy this increment together with centaur's Python lookup (centaur issue #17).
+Rebuild/verify/reissue matching MDD artifacts for the new binary SHA; MDD source
+and CTN6 schema do not change. The production hashes in the table above describe
+the string-integer wheel only. The increment's wheel, built with both centaur
+patches by `build_patched_nautilus_bybit.sh`:
+
+| Item | Value |
+| --- | --- |
+| Wheel | `nautilus_trader-1.231.0-2centaurbybitsend-cp313-cp313-manylinux_2_35_x86_64.whl` |
+| Wheel SHA256 | `f8b1a25f966c2a0b4c3306b44bf465aeb3eafc21119378832cb378d97cfd2ffb` |
+| `nautilus_pyo3` .so SHA256 | `f1056e94ac6b3c97783a55192f02da0e160bb1e06d83c9d71dc32c258e8e02b8` |
+
+2026-10-12: rebuilding with only the string-integer patch reproduced the production
+`.so` SHA256 byte for byte. The increment wheel passed a short live Bybit fill test
+(both fills carried a non-zero `source_send_ns`, sidecar failures 0).
 
 ## Build
 
@@ -73,6 +83,5 @@ checks for the marker string `invalid Bybit trigger direction`.
   on the Bybit hosts; it contains the patch marker. The patch file and build
   script were taken from the centaur maintainer's working tree (not yet
   committed to centaur at that time).
-- Byte-for-byte equivalence of a rebuild from this branch with the production
-  `.so` has not been verified yet. Rebuild with the script and compare SHA256
-  before using this branch as the base for further native changes.
+- 2026-10-12: a rebuild of `v1.231.0` plus the string-integer patch with the
+  script produced the production `.so` SHA256 above byte for byte.
